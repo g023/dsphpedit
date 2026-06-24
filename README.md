@@ -58,7 +58,7 @@ See [`SECURITY.md`](SECURITY.md) for the full threat model. **If in doubt, keep 
   </tr>
   <tr>
     <td><img src="screenshots/03-ai-assistant.png" alt="AI assistant"><br><b>AI assistant</b> — Explain / Full rewrite / Edit (search-replace)</td>
-    <td><img src="screenshots/04-analysis-tools.png" alt="Analysis tools"><br><b>Analysis</b> — <code>php -l</code> lint, structure outline, metrics</td>
+    <td><img src="screenshots/04-analysis-tools.png" alt="Analysis tools"><br><b>Analysis</b> — in-process syntax-check lint (no <code>php -l</code> subprocess), structure outline, metrics</td>
   </tr>
   <tr>
     <td><img src="screenshots/05-backups.png" alt="Backups and restore"><br><b>Backups</b> — one-click ZIP, Zip-Slip-safe restore</td>
@@ -155,7 +155,7 @@ Both also render in a browser (they are localhost-only tools).
 | **Media** | Upload images / PDF / audio / video. Server-side MIME allowlist (finfo), GD re-encode (strips payloads/EXIF), auto thumbnails, randomized filenames, **non-executable** upload dir. The media browser inserts the right snippet at the cursor. |
 | **History** | Conversations persisted to `working_folder/g023_history.json` — browsable, reloadable, clearable, rotated. |
 | **Backup / restore** | One-click ZIP of `working_folder/` (atomic). **Zip-Slip-safe** restore (per-entry validation, stream extraction, temp-dir-then-swap). Retention prunes oldest (default 20). |
-| **Analysis tools** | Non-AI: `php -l` lint, structure outline, metrics. AI: explain / refactor / docblocks / find-bugs (routed through DeepSeek on flash). |
+| **Analysis tools** | Non-AI: in-process syntax-check lint (`token_get_all` full-parse — no `php -l`/CLI subprocess), structure outline, metrics. AI: explain / refactor / docblocks / find-bugs (routed through DeepSeek on flash). |
 | **Security** | Strict `'self'` CSP, CSRF on every state-changing POST, hardened sessions, security headers, single `safe_resolve()` path gate, key never reaches the browser. |
 
 ---

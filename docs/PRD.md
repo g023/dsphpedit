@@ -200,7 +200,7 @@ Request payload (existing prototype contract, to preserve): `action`, `code`, `p
 - **Retention:** keep N most recent (configurable, default e.g. 20); prune oldest by lexical/chronological name sort.
 
 ### 7.7 Code analysis (`tools/`, `ai_tools/`)
-- Non-AI (`tools/`): `php -l` style lint (or `php_check_syntax` via a sandboxed lint call), structure/outline (functions/classes), find-usages, basic metrics.
+- Non-AI (`tools/`): `php -l` style lint performed **in-process** with `token_get_all(…, TOKEN_PARSE)` (no PHP-CLI binary / subprocess), structure/outline (functions/classes), find-usages, basic metrics.
 - AI (`ai_tools/`): "Explain this file", "Suggest refactors", "Generate docblocks", "Find bugs" — all routed through `ds4.php` on **flash** by default.
 
 ---

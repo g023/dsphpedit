@@ -19,11 +19,25 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   under mod_php `PHP_BINARY` is the web-server binary (`httpd.exe`) — so Preview
   launched a second Apache and killed the worker. Native execution removes the
   subprocess (and the PHP-CLI dependency) entirely.
+- **Lint tool (`tools/analyze.php`) under the web SAPI.** It used the same
+  broken `PHP_BINARY ?: 'php'` resolver as the old preview: under
+  apache2handler/PHP-FPM `PHP_BINARY` is empty or names the server binary, so
+  lint only worked by luck when `php` happened to be on the server's `PATH`
+  (and could spawn the web-server binary where it wasn't). Lint is now done
+  **entirely in-process** with `token_get_all(…, TOKEN_PARSE)` — the same
+  syntax/parse/compile errors `php -l` reports, with **no PHP-CLI binary and no
+  `proc_open`**. Works identically on locked-down shared hosting, WAMP/XAMPP,
+  and dev boxes; the project no longer depends on a PHP CLI anywhere.
 
 ### Removed
 - Preview subprocess sandbox (`open_basedir`/`disable_functions`/`timeout` and
   the `PHP_CLI` resolver). Path confinement via `safe_resolve()` and localhost
   binding remain the security boundary; see `SECURITY.md` §3.
+- The lint tool's PHP-CLI resolver and `proc_open`/`php -l` path
+  (`php_cli_binary()` / `lint_via_cli()` in `tools/analyze.php`), plus the
+  `proc_open` and GNU-`timeout` probes in `tools/selfcheck.php`. The project no
+  longer shells out to a PHP binary for any feature — preview and lint both run
+  under the native webserver's PHP.
 
 ## [1.0.0] — 2026-06-23
 
