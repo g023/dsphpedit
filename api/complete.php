@@ -55,8 +55,13 @@ if (!in_array($model, ALLOWED_MODELS, true)) {
 
 // Token budget: keep the request small so latency stays low. We send a bounded
 // window around the cursor — recent code matters most for local completion.
+// The suffix window is generous: "unaware of the code after it" is the classic
+// FIM failure, and the model can only respect what it's actually shown.
 $PREFIX_CHARS = 6000;   // ~the last chunk before the cursor
-$SUFFIX_CHARS = 2000;   // a little of what comes after (true fill-in-the-middle)
+$SUFFIX_CHARS = 4000;   // a meaningful slice of what comes after (true FIM)
+// Keep the FULL untruncated suffix tail for overlap dedup below — even when the
+// model gets only a window, we dedup against everything that actually follows.
+$fullSuffix = $suffix;
 if (strlen($prefix) > $PREFIX_CHARS) {
     $prefix = substr($prefix, -$PREFIX_CHARS);
 }
@@ -82,13 +87,17 @@ $lengthRule = $multiline
 $system = "You are an expert code completion engine embedded in a PHP web IDE, like GitHub Copilot.\n"
     . "You receive the code BEFORE the cursor and the code AFTER the cursor. Output ONLY the exact "
     . "text to insert at the cursor so the code reads naturally.\n"
+    . "The code AFTER the cursor ALREADY EXISTS in the file — it is not yours to write. Treat your\n"
+    . "insertion as glue: reading prefix + your_text + suffix must form correct, non-duplicated code.\n"
     . "STRICT RULES:\n"
     . "1. Output raw code/text ONLY. No explanations, no markdown, no ``` code fences, no leading labels.\n"
-    . "2. Do NOT repeat code that already appears immediately before or after the cursor.\n"
+    . "2. Do NOT repeat code that already appears immediately before or after the cursor. In particular,\n"
+    . "   do NOT emit closing characters (')', ';', '}', ']', '\"', \"'\") or lines that already appear at\n"
+    . "   the START of the code after the cursor — stop exactly where the existing suffix takes over.\n"
     . "3. Your output is spliced in VERBATIM at the cursor — do not restate the prefix.\n"
     . "4. Match the existing indentation, naming, and style. Language: {$lang}.\n"
     . "5. {$lengthRule}\n"
-    . "6. If no sensible completion exists, output an empty string.";
+    . "6. If the code after the cursor already completes the statement, output an empty string.";
 
 $user = "<code_before_cursor>\n{$prefix}\n</code_before_cursor>\n"
     . "<code_after_cursor>\n{$suffix}\n</code_after_cursor>\n"
@@ -115,6 +124,14 @@ try {
     );
 
     $completion = dspe_clean_completion($result['response'], $multiline);
+    // Make the completion "aware of the code BEFORE it": strip any head that
+    // re-types what's immediately before the cursor (e.g. you typed "//" and the
+    // model echoes "// comment", or you typed "function " and it restates it).
+    $completion = dspe_trim_prefix_overlap($completion, $prefix);
+    // Make the completion "aware of the code after it": strip any tail that just
+    // re-types what already follows the cursor (doubled brackets, ';', repeated
+    // lines). This is the dedup the FIM prompt can't guarantee on its own.
+    $completion = dspe_trim_suffix_overlap($completion, $fullSuffix);
 
     ok([
         'completion' => $completion,
@@ -165,4 +182,86 @@ function dspe_clean_completion(string $text, bool $multiline): string
     // Multi-line: trim only trailing whitespace-only tail, preserve internal
     // indentation exactly.
     return rtrim($text, "\n");
+}
+
+/**
+ * Remove any HEAD of the completion that merely re-types the code that already
+ * sits immediately before the cursor. Chat-based FIM models routinely restate
+ * the token(s) the user just typed: you type "//" and it returns "// comment",
+ * you type "function " and it returns "function foo()". Spliced in verbatim this
+ * doubles the prefix ("////", "function function foo()").
+ *
+ * We find the LONGEST suffix-of-the-prefix that equals a prefix-of-the-
+ * completion and drop it from the front of the completion. A lone 1-char overlap
+ * is only trimmed when it's structural (punctuation/comment/closer/whitespace),
+ * since a single coincidental identifier letter is far more likely than a real
+ * duplication.
+ */
+function dspe_trim_prefix_overlap(string $completion, string $prefix): string
+{
+    if ($completion === '' || $prefix === '') {
+        return $completion;
+    }
+
+    // Bound the comparison window: duplicated tokens/lines are short, and this
+    // keeps the scan cheap. 500 chars covers a repeated line or two.
+    $tail = substr(str_replace("\r\n", "\n", $prefix), -500);
+    $max  = min(strlen($completion), strlen($tail));
+
+    for ($k = $max; $k >= 1; $k--) {
+        if (substr($tail, -$k) !== substr($completion, 0, $k)) {
+            continue;
+        }
+        if ($k === 1) {
+            // Only trim a single-char overlap when it's clearly structural.
+            // Includes '/' for the "//" comment case the user hits most.
+            $first = $completion[0];
+            if (!preg_match('/[\s)\]};,>\'"\/(\[{=.]/', $first)) {
+                break;
+            }
+        }
+        return substr($completion, $k);
+    }
+
+    return $completion;
+}
+
+/**
+ * Remove any tail of the completion that merely re-types the code that already
+ * follows the cursor. This is what makes completion "aware of the code after
+ * it": chat-based FIM models routinely re-emit the closing ')', ';', '}', or
+ * even a whole line that the existing suffix already provides, producing doubled
+ * brackets / duplicated lines when spliced in.
+ *
+ * We find the LONGEST suffix-of-completion that equals a prefix-of-the-code-
+ * after-the-cursor and drop it. A lone 1-char overlap is only trimmed when it's
+ * a closer/punctuation/whitespace char — trimming a single identifier letter is
+ * far more likely a coincidence than a real duplication.
+ */
+function dspe_trim_suffix_overlap(string $completion, string $suffix): string
+{
+    if ($completion === '' || $suffix === '') {
+        return $completion;
+    }
+
+    // Bound the comparison window: duplicated closers/lines are short, and this
+    // keeps the scan cheap. 500 chars covers a repeated line or two.
+    $head = substr(str_replace("\r\n", "\n", $suffix), 0, 500);
+    $max  = min(strlen($completion), strlen($head));
+
+    for ($k = $max; $k >= 1; $k--) {
+        if (substr($completion, -$k) !== substr($head, 0, $k)) {
+            continue;
+        }
+        if ($k === 1) {
+            // Only trim a single-char overlap when it's clearly structural.
+            $last = $completion[strlen($completion) - 1];
+            if (!preg_match('/[\s)\]};,>\'"]/', $last)) {
+                break;
+            }
+        }
+        return substr($completion, 0, strlen($completion) - $k);
+    }
+
+    return $completion;
 }
