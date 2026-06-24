@@ -19,6 +19,9 @@ First public release. 🎉
   *Apply edits*). Optional **Thinking** mode surfaces reasoning. Token usage shown.
 - **AI inline code completion** — Copilot-style ghost-text (fill-in-the-middle),
   Manual or Auto trigger, accept-all / accept-word, persisted per browser.
+  Suggestions are overlap-deduped server-side (`dspe_trim_prefix_overlap` /
+  `dspe_trim_suffix_overlap`) against the real prefix and the full untruncated
+  suffix, so spliced completions never double up closers, `//`, or whole lines.
 - **File explorer** scoped to `working_folder/` — create / rename / delete files
   and folders, nested directories, app-managed state hidden from the picker.
 - **Media library** — upload images/PDF/audio/video with a server-side MIME
