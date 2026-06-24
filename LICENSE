@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 g023
+Copyright (c) 2026 g023 (https://github.com/g023/)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,3 +19,18 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+THIRD-PARTY NOTICES
+
+This product bundles the following third-party software, vendored locally
+under assets/vendor/. Their licenses are reproduced alongside the code.
+
+- Ace editor (ace-builds) — BSD 3-Clause License.
+  Copyright (c) 2010, Ajax.org B.V. All rights reserved.
+  See assets/vendor/ace/LICENSE.
+
+- jQuery — MIT License.
+  Copyright OpenJS Foundation and other contributors.
+  https://jquery.org/license
