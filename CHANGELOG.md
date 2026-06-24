@@ -3,6 +3,28 @@
 All notable changes to **DS PHP Edit** are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] — 2026-06-24
+
+### Changed
+- **Server-side preview now executes the file natively through the web server**
+  instead of a PHP-CLI subprocess. `api/preview.php` validates the path and
+  302-redirects the iframe to the file's real URL under `working_folder/`, so it
+  runs exactly as in production — real `$_SERVER`, `header()`, sessions, and
+  `.htaccess`. Works under Apache/mod_php, PHP-FPM, and `php -S router.php`.
+
+### Fixed
+- **Apache worker crash on WAMP/XAMPP when clicking Preview**
+  (`mpm_winnt:crit The pipe has been ended. Unable to retrieve my generation
+  from the parent.`). The old preview spawned `PHP_BINARY` as a subprocess, but
+  under mod_php `PHP_BINARY` is the web-server binary (`httpd.exe`) — so Preview
+  launched a second Apache and killed the worker. Native execution removes the
+  subprocess (and the PHP-CLI dependency) entirely.
+
+### Removed
+- Preview subprocess sandbox (`open_basedir`/`disable_functions`/`timeout` and
+  the `PHP_CLI` resolver). Path confinement via `safe_resolve()` and localhost
+  binding remain the security boundary; see `SECURITY.md` §3.
+
 ## [1.0.0] — 2026-06-23
 
 First public release. 🎉
@@ -42,4 +64,5 @@ First public release. 🎉
 - Self-check tooling: `tools/selfcheck.php` (environment) and `tools/test_paths.php`
   (path-traversal test suite).
 
+[1.0.1]: https://github.com/g023/dsphpedit/releases/tag/v1.0.1
 [1.0.0]: https://github.com/g023/dsphpedit/releases/tag/v1.0.0

@@ -33,22 +33,19 @@ All filesystem access routes through a single gate, `safe_resolve()` in `lib/pat
 
 **Verification:** `php tools/test_paths.php` exercises `../`, `....//`, `..\`, URL/double-URL-encoded variants, absolute paths, Windows drive, null-byte (raw + encoded), mixed traversal, and an in-folder symlink to `/etc` — all rejected. Must print **ALL GREEN**.
 
-## 3. Restricted preview execution context
+## 3. Native preview execution
 
-`api/preview.php` executes the target file in a **separate `php` subprocess** (not in the web request), with:
+`api/preview.php` validates the requested path with `safe_resolve()` (§2), then **302-redirects** the preview iframe to the file's real URL under `working_folder/`. The file is then executed **natively by the web server** (Apache/mod_php, PHP-FPM, or `php -S router.php`) — exactly as it will run in production, with real `$_SERVER`, `header()`, sessions, and `.htaccess`. `preview.php` itself runs no user code and spawns no process.
 
-- `open_basedir = working_folder/ : /tmp/` (confines file access),
-- `memory_limit` cap and `max_execution_time` (15s),
-- a hard wall-clock kill via GNU `timeout` (catches `sleep()`/blocking I/O that `max_execution_time` misses); falls back to a `proc_open` deadline if `timeout` is absent,
-- `disable_functions` = `exec,passthru,shell_exec,system,proc_open,popen,dl,putenv,pcntl_exec,…`,
-- `ffi.enable=0`, `allow_url_fopen=0`, `allow_url_include=0`,
-- `display_errors=1` so fatals/warnings are visible to the operator (this is an operator-only tool).
+This is intentional code execution: a localhost operator previewing their own PHP **is** RCE by design. The security boundary is **(a) binding to localhost** and **(b) path confinement** keeping the iframe pointed only at files inside `working_folder/`.
 
-**Documented limitation:** `eval`/`include`/`require` cannot be disabled. These directives are speed bumps, not a sandbox.
+**Why not an in-process subprocess sandbox?** Earlier builds ran the file in a separate `php` CLI subprocess with `open_basedir`/`disable_functions`/`timeout`. Under mod_php (WAMP/XAMPP) the `PHP_BINARY` constant is the **web-server** binary, so that spawned a second Apache and crashed the worker (`mpm_winnt: The pipe has been ended`). In-PHP directives were never a real sandbox anyway — `eval`/`include`/`require` cannot be disabled. Native execution is simpler, faithful to production, and pushes isolation to the layer that can actually enforce it (the OS / FPM pool / container).
+
+**Trade-off:** the previewed file runs inside the serving worker, so a file that triggers a genuine PHP *crash* (stack overflow, buggy extension) can take that worker down. Normal fatals/exceptions just render as errors.
 
 ### Hardening further (recommended for any shared host)
 
-For stronger isolation than in-process directives, run the preview under a **dedicated low-privilege PHP-FPM pool**:
+Serve `working_folder/` through a **dedicated low-privilege PHP-FPM pool** so previewed code runs confined and non-root:
 
 ```ini
 ; pool: dspe-preview
@@ -79,7 +76,7 @@ security.limit_extensions = .php
 
 - **CSRF:** synchronizer token in `$_SESSION` (`random_bytes(32)`), exposed via `<meta name="csrf-token">`, sent as `X-CSRF-Token`, verified with `hash_equals`. Every state-changing POST goes through `api_guard()`. `SameSite=Strict` cookie.
 - **Session:** cookie params set before `session_start()` (`httponly`, `samesite=Strict`, `secure` **conditional on HTTPS** so plain-http localhost still works), `use_strict_mode=On`, `use_only_cookies=On`, idle timeout.
-- **Response headers:** `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` (preview overrides to `SAMEORIGIN` for its own iframe), `Referrer-Policy: strict-origin-when-cross-origin`, and a strict **`Content-Security-Policy: default-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`** (extended with `img/media/worker` `'self'`/`blob:`/`data:` for assets). The no-CDN/vendor-everything rule makes a strict `'self'` CSP achievable. Toggle enforce vs report-only with `CSP_ENFORCE` in `config.php`.
+- **Response headers:** `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` (the app's own pages; previewed `working_folder/` files are served without the app's frame-blocking headers so they can render in the same-origin preview iframe), `Referrer-Policy: strict-origin-when-cross-origin`, and a strict **`Content-Security-Policy: default-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`** (extended with `img/media/worker` `'self'`/`blob:`/`data:` for assets). The no-CDN/vendor-everything rule makes a strict `'self'` CSP achievable. Toggle enforce vs report-only with `CSP_ENFORCE` in `config.php`.
 - **Secret handling:** the DeepSeek key stays server-side in `lib/ds4.php`; the browser never receives it and never calls DeepSeek directly. The key is never logged, echoed, or reflected in any error payload (provider error messages are scrubbed of `sk-...` tokens). `K.dat` is denied over HTTP by `.htaccess` (Apache) and `router.php` (`php -S`).
 
 ## 6. Out of scope for v1 — untrusted exposure
