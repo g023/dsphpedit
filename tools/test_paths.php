@@ -17,11 +17,18 @@ dspe_bootstrap_state();
 
 $base = WORK_DIR;
 
+// Provision a throwaway fixture inside WORK_DIR so the "exists" cases don't
+// depend on whatever the operator happens to have in working_folder/ (a fresh
+// release ships only welcome.php). Cleaned up below.
+$fixtureRel = '__path_test_fixture.php';
+$fixtureAbs = WORK_DIR . '/' . $fixtureRel;
+$fixtureMade = @file_put_contents($fixtureAbs, "<?php // path-test fixture\n") !== false;
+
 // Each case: [label, path, mustExist, shouldPass]
 $cases = [
-    ['simple file (exists)',          'test.php',                    true,  true],
+    ['simple file (exists)',          $fixtureRel,                   true,  true],
     ['nested create target',          'sub/dir/new.php',             false, true],
-    ['dot-slash prefix',              './test.php',                  true,  true],
+    ['dot-slash prefix',              './' . $fixtureRel,            true,  true],
     ['parent traversal',              '../config.php',               false, false],
     ['deep traversal',                '../../etc/passwd',            false, false],
     ['double-dot-slash obfuscation',  '....//....//config.php',      false, false],
@@ -67,6 +74,9 @@ foreach ($cases as [$label, $path, $mustExist, $shouldPass]) {
 }
 if ($symlinkMade) {
     @unlink($symlinkAbs);
+}
+if ($fixtureMade) {
+    @unlink($fixtureAbs);
 }
 
 $total = count($results);

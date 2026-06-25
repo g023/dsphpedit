@@ -3,6 +3,62 @@
 All notable changes to **DS PHP Edit** are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] — 2026-06-24
+
+### Added
+- **Operator settings panel (⚙)** — configure an **alternate working folder** and
+  **alternate API-key path** (relative *or* absolute), default model, thinking
+  on/off + reasoning effort, DeepSeek timeout, editor font/tab-size/word-wrap,
+  auto-backup-on-save, and the agentic-reading/PEEK knobs. Stored in
+  `dspe_settings.json` at the repo root — **outside `working_folder/`** so a
+  folder switch never loses it, and **denied over HTTP** (`.htaccess` +
+  `router.php`) alongside `K.dat`. `lib/settings.php` owns the schema, validation
+  (types/ranges clamped, unknown keys dropped, app-bricking paths rejected) and
+  the atomic save; `api/settings.php` is the get/save/reset endpoint. Changing the
+  working folder or key path prompts a reload. `config.php` resolves every
+  constant (`WORK_DIR`, `KEY_FILE`, `DEEPSEEK_TIMEOUT`, …) from settings so the
+  whole app re-points from one place; `WORK_DIR_IN_APPROOT` gates server-side
+  Preview when the folder isn't web-reachable.
+- **PEEK project map (🗺)** — a compact structural index of `working_folder/`
+  (per-file functions/methods/classes/consts with signatures, namespaces, and
+  include/require dependency edges) extracted with `token_get_all()`, cached at
+  `working_folder/.g023_peek.json` and rebuilt **incrementally** (only changed
+  files re-scan). `peek_render()` (in `lib/codemap.php`) turns it into a
+  few-hundred-token block the AI is given so it grasps the whole project without
+  reading every file. Browse it in the 🗺 panel; `api/peek.php` serves
+  render / structured / symbols / deps.
+- **Agentic reading (🔍)** — when you ask the AI about (or to edit) a file,
+  `lib/context.php` auto-gathers the context that file needs: it follows the
+  code's own `include`/`require` edges **and** resolves symbol references (a
+  call/`new`/const used here but defined elsewhere) via the PEEK symbol index,
+  breadth-first to `AGENTIC_MAX_DEPTH` and bounded by
+  `AGENTIC_MAX_FILES`/`AGENTIC_MAX_BYTES` (over-budget files degrade to their PEEK
+  summary). Deterministic — no extra LLM round-trips. Injected as a system message
+  by `api/ai_chat.php` and `ai_tools/assist.php`; the response carries a `context`
+  block the UI shows as a **"🔍 read N related files"** badge. Disable per-call
+  (`context=0`) or globally via settings.
+- **`tools/test_features.php`** — in-process assertion suite (36 checks) covering
+  settings load/validate/save, the PEEK map builder, and agentic context
+  gathering. Run alongside `tools/selfcheck.php` after touching any of these.
+
+### Changed
+- `config.php` now loads `dspe_settings.json` first and derives `WORK_DIR`,
+  `KEY_FILE`, `DEEPSEEK_TIMEOUT`, `AUTO_BACKUP_ON_SAVE`, the agentic/PEEK budgets,
+  and `PREFERRED_MODEL` from it — defaults are unchanged when no settings file is
+  present (zero-config). The server-side hard default stays `deepseek-v4-flash`
+  everywhere; `PREFERRED_MODEL` only changes which allowlisted model the UI
+  pre-selects.
+- `.htaccess` and `router.php` deny `dspe_settings.json` (and its `.tmp_*`
+  writes) over HTTP.
+- `api/ai_chat.php` and `ai_tools/assist.php` attach the agentic context block and
+  PEEK map to AI requests; `api/files.php` keeps the PEEK cache fresh on write.
+
+### Fixed
+- **`tools/test_paths.php` "exists" cases no longer depend on a stray `test.php`**
+  in `working_folder/`. The suite now provisions its own throwaway fixture inside
+  `WORK_DIR` (and removes it), so it is **15/15 green on a fresh release** that
+  ships only the `welcome.php` sample, instead of failing two cases.
+
 ## [1.0.1] — 2026-06-24
 
 ### Changed
@@ -78,5 +134,6 @@ First public release. 🎉
 - Self-check tooling: `tools/selfcheck.php` (environment) and `tools/test_paths.php`
   (path-traversal test suite).
 
+[1.1.0]: https://github.com/g023/dsphpedit/releases/tag/v1.1.0
 [1.0.1]: https://github.com/g023/dsphpedit/releases/tag/v1.0.1
 [1.0.0]: https://github.com/g023/dsphpedit/releases/tag/v1.0.0

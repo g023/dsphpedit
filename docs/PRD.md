@@ -90,23 +90,29 @@ Modular files; separation of concerns. The prototype's "single PHP file returns 
 ```
 php_builder/
 ├── index.php                  # Front-end shell (editor UI, panes, asset includes)
-├── config.php                 # Paths, constants (DEFAULT_MODEL), feature flags
+├── config.php                 # Paths/constants resolved from settings, model policy, feature flags
 ├── K.dat                      # DeepSeek API key (sk-...), repo root, never web-served
+├── dspe_settings.json         # Operator settings, repo root, outside working_folder, never web-served
 ├── lib/
 │   ├── ds4.php                # Canonical DeepSeek connector: ds4_chat() / llm_get()
 │   ├── paths.php              # safe_resolve() path-confinement helper (gates ALL file I/O)
 │   ├── security.php           # CSRF token issue/verify, session bootstrap, headers
+│   ├── settings.php           # Settings schema, validation, atomic save, path checks
+│   ├── codemap.php            # PEEK map builder (symbols + dependency edges, cached)
+│   ├── context.php            # Agentic reading (follows includes + symbol refs)
 │   └── response.php           # JSON envelope helpers, error normalization
 ├── api/
-│   ├── ai_chat.php            # POST: AI requests (explain | full | edit modes)
+│   ├── ai_chat.php            # POST: AI requests (explain | full | edit modes) + agentic context
 │   ├── files.php              # POST: list / read / write / create / rename / delete (in working_folder)
 │   ├── preview.php            # Serves server-side PHP execution of a working_folder file
+│   ├── settings.php           # POST/GET: get / save / reset operator settings
+│   ├── peek.php               # POST/GET: project map (render / structured / symbols / deps)
 │   ├── upload.php             # POST: media upload + thumbnail generation
 │   ├── media.php              # POST/GET: media browse / thumbnail serve
 │   ├── history.php            # POST/GET: conversation history read/append/clear
 │   └── backup.php             # POST: create / list / restore / delete backups
 ├── ai_tools/                  # DeepSeek-powered tools surfaced in the UI (e.g. explain, refactor, doc-gen)
-├── tools/                     # Non-AI utilities (lint, structure outline, find-usages)
+├── tools/                     # Non-AI utilities (lint, outline, selfcheck, test_paths, test_features)
 ├── assets/                    # ALL vendored, no CDN
 │   ├── vendor/ace/            # Ace editor (BSD-3) prebuilt single-file assets
 │   ├── vendor/jquery/         # jQuery (vendored locally)
@@ -114,6 +120,7 @@ php_builder/
 │   └── js/app.js
 └── working_folder/            # The user's PHP project under edit (sandbox boundary)
     ├── g023_history.json      # Conversation history (app-managed)
+    ├── .g023_peek.json        # Cached PEEK map (app-managed, per-working-folder)
     └── g023_backups/          # ZIP backups (app-managed)
 ```
 
@@ -203,6 +210,20 @@ Request payload (existing prototype contract, to preserve): `action`, `code`, `p
 - Non-AI (`tools/`): `php -l` style lint performed **in-process** with `token_get_all(…, TOKEN_PARSE)` (no PHP-CLI binary / subprocess), structure/outline (functions/classes), find-usages, basic metrics.
 - AI (`ai_tools/`): "Explain this file", "Suggest refactors", "Generate docblocks", "Find bugs" — all routed through `ds4.php` on **flash** by default.
 
+### 7.8 Operator settings (`lib/settings.php`, `api/settings.php`, ⚙ panel)
+- **`dspe_settings.json` at the repo root** — **not** in `working_folder/` (so switching working folder never loses it) and **denied over HTTP** (`.htaccess` + `router.php`) the same way as `K.dat`. Zero-config: the file may be absent and every default applies.
+- `config.php` loads it **first**, so `WORK_DIR`, `KEY_FILE`, `DEEPSEEK_TIMEOUT`, `AUTO_BACKUP_ON_SAVE`, the agentic/PEEK budgets, and `PREFERRED_MODEL` all resolve from it — every constant stays the single source of truth, so the whole app re-points from one place.
+- Configurable: **alternate working folder** and **alternate API-key path** (relative to repo root *or* absolute — allowed under the single-trusted-localhost-operator posture), default model, thinking on/off + reasoning effort, DeepSeek timeout, editor font/tab-size/word-wrap, auto-backup-on-save, agentic-reading + PEEK knobs.
+- `lib/settings.php` owns the **schema, validation and atomic save**: types/ranges clamped, unknown keys dropped, and any path that would brick the app (a working folder that is a file, or not creatable/writable) rejected before save. `api/settings.php` is the get/save/reset endpoint.
+- The **server-side hard default stays `deepseek-v4-flash`** (`DEFAULT_MODEL`); `PREFERRED_MODEL` only changes which allowlisted model the UI pre-selects, so the flash-default policy (§6.2) still holds whenever the client sends nothing.
+- Changing the working folder or key path needs a reload (`reload:true` in the save response). `WORK_DIR_IN_APPROOT` gates server-side Preview: a folder outside the app isn't web-reachable, so `api/preview.php` returns a clear notice and the UI disables Preview (editing/AI still work).
+
+### 7.9 PEEK map & agentic reading (`lib/codemap.php`, `lib/context.php`, `api/peek.php`, 🗺 panel)
+- **PEEK map** — a compact structural index of `working_folder/`: per-file symbols (functions/methods/classes/consts with signatures), namespaces, and include/require dependency edges, extracted with `token_get_all()` and cached at `working_folder/.g023_peek.json` (**incremental**: only changed files re-scan, bounded by `PEEK_MAX_FILES`). `peek_render()` turns it into a few-hundred-token block so the AI grasps the whole project without reading every file. Browse it in the 🗺 panel; `api/peek.php` serves render / structured / symbols / deps.
+- **Agentic reading** — auto-gathers the context a file needs: follows the code's own include/require edges **and** resolves symbol references (a call/`new`/const used here but defined elsewhere) via the PEEK symbol index, breadth-first to `AGENTIC_MAX_DEPTH`, bounded by `AGENTIC_MAX_FILES`/`AGENTIC_MAX_BYTES` (past the byte budget a file degrades to its PEEK summary). **Deterministic** (no extra LLM round-trips) — fast and testable.
+- Injected as a system message by `api/ai_chat.php` and `ai_tools/assist.php`; the response carries a `context` block the UI shows as a **"🔍 read N related files"** badge. Clients can disable per-call (`context=0`); operators via settings. Both features only ever read files already inside `WORK_DIR`.
+- Coverage: `php tools/test_features.php` (in-process assertions over settings, PEEK and agentic context) plus `php tools/selfcheck.php` after touching any of these.
+
 ---
 
 ## 8. API / Endpoint Contract
@@ -229,6 +250,8 @@ Conventions:
 | `api/media.php` | `list,thumb` | thumbnail serving |
 | `api/history.php` | `list,load,append,clear` | g023_history.json |
 | `api/backup.php` | `create,list,restore,delete` | Zip-Slip-safe |
+| `api/settings.php` | `get,save,reset` | validated server-side; `reload:true` when WORK_DIR/key path changes |
+| `api/peek.php` | `render,structured,symbols,deps` | PEEK map; cached at `.g023_peek.json`, incremental |
 
 ---
 

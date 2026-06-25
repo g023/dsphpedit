@@ -54,6 +54,11 @@ function build_tree(string $absDir, string $relDir): array
         if ($name === '.' || $name === '..') {
             continue;
         }
+        // Hide dotfiles everywhere (app state like .g023_peek.json, .thumbs,
+        // .htaccess guards) — they are never user-editable content.
+        if ($name !== '' && $name[0] === '.') {
+            continue;
+        }
         // Hide app-managed state at the top level only.
         if ($relDir === '' && is_hidden_top($name)) {
             continue;

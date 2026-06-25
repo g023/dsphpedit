@@ -23,6 +23,16 @@ require_once __DIR__ . '/../lib/paths.php';
 
 dspe_bootstrap_state();
 
+// Preview executes the file NATIVELY via an HTTP redirect, so the working folder
+// must be reachable under the web root (i.e. inside APP_ROOT). With an alternate
+// working folder outside the app, editing/AI still work but preview cannot.
+if (!WORK_DIR_IN_APPROOT) {
+    http_response_code(409);
+    preview_shell('Preview unavailable here',
+        'The working folder is outside the app directory, so it is not web-reachable. '
+        . 'Set a working folder inside the app (Settings) to use server-side Preview.');
+}
+
 $file = $_GET['file'] ?? '';
 if ($file === '') {
     preview_shell('No file specified.', 'Open a file and click <b>Preview</b>.');
@@ -41,11 +51,19 @@ if (!is_file($abs)) {
 }
 
 // Build a URL relative to THIS script (api/preview.php) that points at the file
-// inside working_folder, so the browser loads it straight from the server and
-// PHP executes it natively. Each path segment is rawurlencoded; slashes stay.
+// inside the ACTIVE working folder, so the browser loads it straight from the
+// server and PHP executes it natively. The working folder may be the bundled
+// working_folder/ or any operator-configured directory inside the app — derive
+// its web path from WORK_DIR rather than hardcoding the name. Each path segment
+// is rawurlencoded; slashes stay.
 $rel     = rel_path(WORK_DIR, $abs);                  // e.g. "sub/dir/foo.php"
 $encoded = implode('/', array_map('rawurlencode', explode('/', $rel)));
-$target  = '../working_folder/' . $encoded;
+
+// Path from APP_ROOT to WORK_DIR (e.g. "working_folder" or "wf_alt"), as web segs.
+$workRel = ltrim(str_replace('\\', '/', substr(WORK_DIR, strlen(APP_ROOT))), '/');
+$workEnc = $workRel === '' ? '' : implode('/', array_map('rawurlencode', explode('/', $workRel))) . '/';
+// api/preview.php -> APP_ROOT is one level up.
+$target  = '../' . $workEnc . $encoded;
 
 // Forward the numeric cache-buster so the ⟳ reload button always re-runs it.
 $t = $_GET['t'] ?? '';

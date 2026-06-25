@@ -9,6 +9,18 @@
     const CSRF = $('meta[name="csrf-token"]').attr('content') || '';
     const HAS_KEY = $('meta[name="has-key"]').attr('content') === '1';
     const DEFAULT_MODEL = $('meta[name="default-model"]').attr('content') || 'deepseek-v4-flash';
+    const PREFERRED_MODEL = $('meta[name="preferred-model"]').attr('content') || DEFAULT_MODEL;
+    const PREVIEW_SUPPORTED = $('meta[name="preview-supported"]').attr('content') !== '0';
+
+    // Operator settings (loaded from api/settings.php on init).
+    let SETTINGS = {};
+    const SETTING_KEYS = {
+        working_folder: 'text', key_path: 'text', default_model: 'text',
+        reasoning_effort: 'text', thinking_default: 'bool', deepseek_timeout: 'int',
+        agentic_reading: 'bool', peek_enabled: 'bool', agentic_max_files: 'int',
+        agentic_max_bytes: 'int', agentic_max_depth: 'int', editor_font_size: 'int',
+        editor_tab_size: 'int', editor_word_wrap: 'bool', auto_backup_on_save: 'bool'
+    };
 
     let editor;
     let welcomeSession;           // read-only placeholder shown when no tabs are open
@@ -632,7 +644,11 @@
             if (!r.success) { toast(r.error, 'err'); return; }
             const mode = 'ace/mode/' + (EXT_MODE[extOf(r.data.path)] || 'text');
             const session = ace.createEditSession(r.data.content, mode);
-            session.setOptions({ tabSize: 4, useSoftTabs: true, newLineMode: 'unix' });
+            session.setOptions({
+                tabSize: parseInt(SETTINGS.editor_tab_size, 10) || 4,
+                useSoftTabs: true, newLineMode: 'unix',
+                wrap: !!SETTINGS.editor_word_wrap
+            });
             session.setUndoManager(new ace.UndoManager());
             tabs.push({ path: r.data.path, session, dirty: false, size: r.data.size, mime: r.data.mime });
             switchToTab(tabs.length - 1);
@@ -673,6 +689,10 @@
     }
     async function doPreview() {
         if (!activeFile) { toast('Open a file first'); return; }
+        if (!PREVIEW_SUPPORTED) {
+            toast('Preview needs the working folder inside the app directory (see Settings)', 'err');
+            return;
+        }
         if (dirty) await saveFile();
         previewTarget = activeFile;
         $('#preview-frame').attr('src', previewUrl());
@@ -740,6 +760,22 @@
         const text = data.response || '';
         const $m = addMsg('assistant', renderMarkdownish(text));
 
+        // Agentic-reading context badge: shows which related files the AI read.
+        if (data.context && (data.context.files && data.context.files.length || data.context.peek_used)) {
+            const c = data.context;
+            const names = (c.files || []).map((f) => baseName(f.path));
+            let label = '🔍 read ';
+            const parts = [];
+            if (names.length) parts.push(names.length + ' related file' + (names.length > 1 ? 's' : ''));
+            if (c.peek_used) parts.push('project map');
+            label += parts.join(' + ');
+            const $badge = $('<div class="ctx-badge">').attr('title',
+                'Agentic reading auto-included: ' + ((c.files || []).map((f) => f.path + ' — ' + f.reason).join('\n') || 'project map'));
+            $badge.append($('<span>').text(label));
+            if (names.length) $badge.append($('<span class="ctx-files">').text(' (' + names.join(', ') + ')'));
+            $m.append($badge);
+        }
+
         // Reasoning accordion
         if (data.reasoning && data.reasoning.trim()) {
             const $d = $('<details>').append(
@@ -798,6 +834,7 @@
             file: activeFile || '',
             model: $('#model-select').val(),
             enable_thinking: $('#thinking-toggle').is(':checked') ? '1' : '0',
+            reasoning_effort: SETTINGS.reasoning_effort || 'medium',
             history: JSON.stringify(conversation.slice(0, -1))
         }).then((r) => {
             $typing.remove();
@@ -892,8 +929,15 @@
                 headers: { 'X-CSRF-Token': CSRF }, dataType: 'json'
             }).then((r) => {
                 if (r.success) toast('Uploaded ' + r.data.name, 'ok');
-                else toast(r.error, 'err');
-            }).fail(() => toast('Upload failed: ' + file.name, 'err'))
+                else toast(r.error || ('Upload failed: ' + file.name), 'err');
+            }).fail((xhr) => {
+                let err = (xhr && xhr.responseJSON && xhr.responseJSON.error)
+                    || (xhr && (xhr.responseText || '').trim())
+                    || (xhr && xhr.statusText)
+                    || 'unknown error';
+                if (err.length > 200) err = err.slice(0, 200) + '…';
+                toast(file.name + ': ' + err, 'err');
+            })
               .always(() => { if (++done === queue.length) { loadMedia(); switchPanel('media'); } });
         });
     }
@@ -1016,6 +1060,125 @@
         saveState();
     }
 
+    // ---- Settings ---------------------------------------------------------
+    function loadSettings() {
+        return api('settings.php', { action: 'get' }).then((r) => {
+            if (!r.success) { toast(r.error || 'Could not load settings', 'err'); return; }
+            SETTINGS = r.data.values || {};
+            fillSettingsForm(r.data);
+            applyEditorSettings(SETTINGS);
+        });
+    }
+    function fillSettingsForm(data) {
+        const v = data.values || {};
+        Object.keys(SETTING_KEYS).forEach((k) => {
+            const $el = $('#set-' + k);
+            if (!$el.length) return;
+            if (SETTING_KEYS[k] === 'bool') $el.prop('checked', !!v[k]);
+            else $el.val(v[k]);
+        });
+        // Resolved-path hints + warnings from the server.
+        const res = data.resolved || {};
+        const warn = data.warnings || {};
+        ['working_folder', 'key_path'].forEach((k) => {
+            const $h = $('#hint-' + k);
+            if (!$h.length) return;
+            let msg = 'Resolves to: ' + (res[k] || '—');
+            $h.removeClass('ok warn err');
+            if (warn[k]) { msg = warn[k]; $h.addClass('warn'); }
+            else { $h.addClass('ok'); }
+            $h.text(msg);
+        });
+        const rt = data.runtime || {};
+        if (rt.preview_supported === false) {
+            $('#paths-reload-note').prop('hidden', false)
+                .text('⚠ Working folder is outside the app — Preview is disabled there. Path changes need a reload.');
+        }
+    }
+    function collectSettingsForm() {
+        const out = {};
+        Object.keys(SETTING_KEYS).forEach((k) => {
+            const $el = $('#set-' + k);
+            if (!$el.length) return;
+            if (SETTING_KEYS[k] === 'bool') out[k] = $el.is(':checked') ? '1' : '0';
+            else out[k] = $el.val();
+        });
+        return out;
+    }
+    function applyEditorSettings(v) {
+        if (!editor) return;
+        if (v.editor_font_size) editor.setFontSize(parseInt(v.editor_font_size, 10) + 'px');
+        const tab = parseInt(v.editor_tab_size, 10);
+        const wrap = !!v.editor_word_wrap;
+        // Apply to every open session (and the welcome session).
+        const sessions = tabs.map((t) => t.session);
+        if (welcomeSession) sessions.push(welcomeSession);
+        sessions.push(editor.session);
+        sessions.forEach((s) => {
+            if (tab) s.setTabSize(tab);
+            s.setUseWrapMode(wrap);
+        });
+    }
+    function saveSettings(e) {
+        if (e) e.preventDefault();
+        const payload = collectSettingsForm();
+        payload.action = 'save';
+        const $st = $('#settings-status').removeClass('ok err').text('Saving…');
+        api('settings.php', payload).then((r) => {
+            if (!r.success) {
+                $st.addClass('err').text(r.error || 'Save failed');
+                // Surface per-field errors on the path hints.
+                const errs = r.responseJSON ? r.responseJSON.errors : null;
+                return;
+            }
+            SETTINGS = r.data.values || SETTINGS;
+            applyEditorSettings(SETTINGS);
+            fillSettingsForm({ values: SETTINGS, resolved: r.data.resolved, warnings: r.data.warnings, runtime: {} });
+            $st.addClass('ok').text('Saved ✓');
+            setTimeout(() => $st.text(''), 2500);
+            if (r.data.reload) {
+                modal({
+                    title: 'Reload required',
+                    message: 'Working folder / key path changed. Reload now to apply?',
+                    okText: 'Reload'
+                }).then((ok) => { if (ok) location.reload(); });
+            }
+        }).fail((xhr) => {
+            let m = 'Save failed', errs = null;
+            try { const j = JSON.parse(xhr.responseText); m = j.error || m; errs = j.errors; } catch (e2) {}
+            $st.addClass('err').text(m);
+            if (errs) {
+                Object.keys(errs).forEach((k) => {
+                    $('#hint-' + k).removeClass('ok warn').addClass('err').text(errs[k]);
+                });
+            }
+        });
+    }
+    function resetSettings() {
+        modal({ title: 'Reset settings', message: 'Restore all settings to defaults?', okText: 'Reset' })
+            .then((ok) => {
+                if (!ok) return;
+                api('settings.php', { action: 'reset' }).then((r) => {
+                    if (!r.success) { toast(r.error, 'err'); return; }
+                    SETTINGS = r.data.values;
+                    applyEditorSettings(SETTINGS);
+                    fillSettingsForm({ values: SETTINGS, resolved: r.data.resolved, warnings: r.data.warnings, runtime: {} });
+                    toast('Settings reset', 'ok');
+                    if (r.data.reload) location.reload();
+                });
+            });
+    }
+
+    // ---- PEEK project map -------------------------------------------------
+    function loadPeek(force) {
+        const $out = $('#peek-output').text('Building project map…');
+        return api('peek.php', { action: 'render', file: activeFile || '', force: force ? '1' : '0' })
+            .then((r) => {
+                if (!r.success) { $out.text('Error: ' + (r.error || 'failed')); return; }
+                $out.text(r.data.text || '(empty)');
+            }).fail(() => $out.text('Could not build the project map.'));
+    }
+
     // ---- Panels -----------------------------------------------------------
     function switchPanel(name) {
         currentPanel = name;
@@ -1026,6 +1189,8 @@
         if (name === 'media') loadMedia();
         if (name === 'history') loadHistory();
         if (name === 'backups') loadBackups();
+        if (name === 'peek') loadPeek();
+        if (name === 'settings') loadSettings();
         saveState();
     }
 
@@ -1061,6 +1226,11 @@
         });
         $('#btn-backup-create').on('click', createBackup);
         $('#btn-backup-refresh').on('click', loadBackups);
+
+        // Settings + PEEK
+        $('#settings-form').on('submit', saveSettings);
+        $('#btn-settings-reset').on('click', resetSettings);
+        $('#btn-peek-rebuild').on('click', () => loadPeek(true));
 
         $('.rail-btn').on('click', function () {
             const panel = $(this).data('panel');
@@ -1116,8 +1286,15 @@
 
         // Layout / option selections first (cheap, synchronous).
         expandedDirs = new Set(st.expandedDirs || []);
-        if (st.model && $('#model-select option[value="' + st.model + '"]').length) $('#model-select').val(st.model);
-        if (st.thinking) $('#thinking-toggle').prop('checked', true);
+        // Model: saved choice wins; otherwise the operator's preferred-model setting.
+        if (st.model && $('#model-select option[value="' + st.model + '"]').length) {
+            $('#model-select').val(st.model);
+        } else if ($('#model-select option[value="' + PREFERRED_MODEL + '"]').length) {
+            $('#model-select').val(PREFERRED_MODEL);
+        }
+        // Thinking: saved choice wins; otherwise the settings default.
+        if (st.thinking !== undefined) $('#thinking-toggle').prop('checked', !!st.thinking);
+        else if (SETTINGS.thinking_default) $('#thinking-toggle').prop('checked', true);
         setMode_chat(st.aiMode && /^(explain|full|edit)$/.test(st.aiMode) ? st.aiMode : 'explain');
 
         // Side panel + chat drawer: saved state wins; otherwise fall back to
@@ -1154,7 +1331,9 @@
         if (!HAS_KEY) $('#model-select, #btn-send, #chat-input').prop('disabled', true);
         $('#editor-status').text('Ready · PHP ' + '8.4');
         showWelcome();
-        restoreState();
+        // Load operator settings first so editor + AI defaults apply, then
+        // restore the per-browser UI state (which overrides where it exists).
+        loadSettings().always(() => restoreState());
         // Force Ace to recompute size after layout settles.
         setTimeout(() => editor && editor.resize(), 80);
     });

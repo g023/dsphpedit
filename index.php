@@ -31,6 +31,8 @@ $proModel   = PRO_MODEL;
     <meta name="csrf-token" content="<?= htmlspecialchars($csrf, ENT_QUOTES) ?>">
     <meta name="has-key" content="<?= $hasKey ? '1' : '0' ?>">
     <meta name="default-model" content="<?= htmlspecialchars($defaultMdl, ENT_QUOTES) ?>">
+    <meta name="preferred-model" content="<?= htmlspecialchars(PREFERRED_MODEL, ENT_QUOTES) ?>">
+    <meta name="preview-supported" content="<?= WORK_DIR_IN_APPROOT ? '1' : '0' ?>">
     <title>DS PHP Edit — DeepSeek V4 Web IDE</title>
     <link rel="icon" href="data:image/svg+xml,<?= rawurlencode('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#0e639c"/><text x="16" y="22" font-size="16" text-anchor="middle" fill="#fff" font-family="monospace">DS</text></svg>') ?>">
     <link rel="stylesheet" href="assets/css/app.css">
@@ -65,7 +67,9 @@ $proModel   = PRO_MODEL;
             <button class="rail-btn"        data-panel="history" title="Conversation history">💬</button>
             <button class="rail-btn"        data-panel="backups" title="Backups">📦</button>
             <button class="rail-btn"        data-panel="tools"   title="Analysis tools">🛠</button>
+            <button class="rail-btn"        data-panel="peek"    title="Project map (PEEK)">🗺</button>
             <span class="rail-spacer"></span>
+            <button class="rail-btn"        data-panel="settings" title="Settings">⚙</button>
             <button class="rail-btn" data-panel="about" title="About / help">ⓘ</button>
         </nav>
 
@@ -130,7 +134,7 @@ $proModel   = PRO_MODEL;
                 <div class="panel-head"><span>Analysis</span></div>
                 <div class="panel-sub">Non-AI tools for the open file</div>
                 <div class="tool-buttons">
-                    <button class="tool-btn" data-tool="lint">⚙ Lint (php -l)</button>
+                    <button class="tool-btn" data-tool="lint">⚙ Lint (syntax check)</button>
                     <button class="tool-btn" data-tool="outline">≣ Structure outline</button>
                     <button class="tool-btn" data-tool="metrics">📊 Metrics</button>
                 </div>
@@ -143,6 +147,107 @@ $proModel   = PRO_MODEL;
                     <button class="tool-btn ai" data-aitool="bugs">🐞 Find bugs</button>
                 </div>
                 <div id="tool-output" class="tool-output"></div>
+            </section>
+
+            <!-- Project map (PEEK) -->
+            <section class="panel" data-panel="peek">
+                <div class="panel-head">
+                    <span>Project Map · PEEK</span>
+                    <div class="panel-tools">
+                        <button id="btn-peek-rebuild" class="icon-btn" title="Rebuild map">⟳</button>
+                    </div>
+                </div>
+                <div class="panel-sub">Compact structural map the AI uses to understand your code</div>
+                <pre id="peek-output" class="peek-output">Loading…</pre>
+            </section>
+
+            <!-- Settings -->
+            <section class="panel" data-panel="settings">
+                <div class="panel-head">
+                    <span>Settings</span>
+                    <div class="panel-tools">
+                        <button id="btn-settings-reset" class="icon-btn" title="Reset all to defaults">↺</button>
+                    </div>
+                </div>
+                <div class="panel-sub">Stored in <code>dspe_settings.json</code> (never web-served)</div>
+
+                <form id="settings-form" class="settings-form" autocomplete="off">
+                    <fieldset>
+                        <legend>Paths</legend>
+                        <label class="set-field">
+                            <span>Working folder</span>
+                            <input type="text" id="set-working_folder" placeholder="(default) working_folder/">
+                            <small class="set-hint" id="hint-working_folder">Relative to the app, or an absolute path. Blank = bundled folder.</small>
+                        </label>
+                        <label class="set-field">
+                            <span>API key path</span>
+                            <input type="text" id="set-key_path" placeholder="(default) K.dat">
+                            <small class="set-hint" id="hint-key_path">Path to the DeepSeek key file. Blank = bundled K.dat.</small>
+                        </label>
+                        <div class="set-note" id="paths-reload-note" hidden>⚠ Changing a path takes effect after reload.</div>
+                    </fieldset>
+
+                    <fieldset>
+                        <legend>AI / DeepSeek</legend>
+                        <label class="set-field">
+                            <span>Default model</span>
+                            <select id="set-default_model">
+                                <option value="<?= htmlspecialchars($defaultMdl) ?>"><?= htmlspecialchars($defaultMdl) ?> · default</option>
+                                <option value="<?= htmlspecialchars($proModel) ?>"><?= htmlspecialchars($proModel) ?> · opt-in</option>
+                            </select>
+                        </label>
+                        <label class="set-field">
+                            <span>Reasoning effort (thinking)</span>
+                            <select id="set-reasoning_effort">
+                                <option value="low">low</option>
+                                <option value="medium">medium</option>
+                                <option value="high">high</option>
+                            </select>
+                        </label>
+                        <label class="set-check"><input type="checkbox" id="set-thinking_default"> Enable thinking by default</label>
+                        <label class="set-field">
+                            <span>DeepSeek timeout (s)</span>
+                            <input type="number" id="set-deepseek_timeout" min="10" max="600">
+                        </label>
+                    </fieldset>
+
+                    <fieldset>
+                        <legend>Agentic reading &amp; PEEK</legend>
+                        <label class="set-check"><input type="checkbox" id="set-agentic_reading"> Auto-read related files for the AI</label>
+                        <label class="set-check"><input type="checkbox" id="set-peek_enabled"> Include the project map (PEEK) in prompts</label>
+                        <label class="set-field">
+                            <span>Max related files</span>
+                            <input type="number" id="set-agentic_max_files" min="0" max="40">
+                        </label>
+                        <label class="set-field">
+                            <span>Max context bytes</span>
+                            <input type="number" id="set-agentic_max_bytes" min="0" max="400000" step="1000">
+                        </label>
+                        <label class="set-field">
+                            <span>Max follow depth</span>
+                            <input type="number" id="set-agentic_max_depth" min="1" max="6">
+                        </label>
+                    </fieldset>
+
+                    <fieldset>
+                        <legend>Editor</legend>
+                        <label class="set-field">
+                            <span>Font size</span>
+                            <input type="number" id="set-editor_font_size" min="9" max="28">
+                        </label>
+                        <label class="set-field">
+                            <span>Tab size</span>
+                            <input type="number" id="set-editor_tab_size" min="2" max="8">
+                        </label>
+                        <label class="set-check"><input type="checkbox" id="set-editor_word_wrap"> Word wrap</label>
+                        <label class="set-check"><input type="checkbox" id="set-auto_backup_on_save"> Auto-backup on save</label>
+                    </fieldset>
+
+                    <div class="settings-actions">
+                        <button type="submit" id="btn-settings-save" class="btn btn-primary">Save settings</button>
+                        <span id="settings-status" class="set-status"></span>
+                    </div>
+                </form>
             </section>
 
             <!-- About -->

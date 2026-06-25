@@ -21,12 +21,36 @@ define('DSPE_CONFIG_LOADED', true);
 define('APP_ROOT', __DIR__);
 define('LIB_DIR', APP_ROOT . '/lib');
 define('API_DIR', APP_ROOT . '/api');
-define('WORK_DIR', APP_ROOT . '/working_folder');
+
+// Operator settings live OUTSIDE working_folder (so they survive a working-
+// folder switch) and outside the web-served picker. Zero-config: the file may
+// be absent and every default below applies. See lib/settings.php for the full
+// schema, validation, and the save path.
+define('SETTINGS_FILE', APP_ROOT . '/dspe_settings.json');
+$GLOBALS['__dspe_settings_raw'] = dspe_load_settings_file();
+
+// Working folder and key path are operator-configurable (relative OR absolute).
+// Everything downstream still uses these constants unchanged, so a single
+// resolution point here re-points the whole app.
+define('WORK_DIR', dspe_resolve_setting_path(
+    (string) ($GLOBALS['__dspe_settings_raw']['working_folder'] ?? ''),
+    APP_ROOT . '/working_folder'
+));
+define('KEY_FILE', dspe_resolve_setting_path(
+    (string) ($GLOBALS['__dspe_settings_raw']['key_path'] ?? ''),
+    APP_ROOT . '/K.dat'
+));
 define('UPLOAD_DIR', WORK_DIR . '/uploads');
 define('THUMB_DIR', UPLOAD_DIR . '/.thumbs');
 define('BACKUP_DIR', WORK_DIR . '/g023_backups');
 define('HISTORY_FILE', WORK_DIR . '/g023_history.json');
-define('KEY_FILE', APP_ROOT . '/K.dat');
+
+// True when WORK_DIR sits inside APP_ROOT — required for the native-redirect
+// preview to reach the file over HTTP. Editing/AI work regardless; only preview
+// needs web-reachability (see api/preview.php).
+define('WORK_DIR_IN_APPROOT',
+    WORK_DIR === APP_ROOT
+    || str_starts_with(WORK_DIR, APP_ROOT . DIRECTORY_SEPARATOR));
 
 // Names filtered out of the user-facing file picker (app-managed state).
 define('HIDDEN_NAMES', ['g023_history.json', 'g023_backups', 'uploads']);
@@ -38,7 +62,14 @@ define('PRO_MODEL', 'deepseek-v4-pro');
 define('ALLOWED_MODELS', [DEFAULT_MODEL, PRO_MODEL]);
 // NOTE: the DeepSeek endpoint URL lives ONLY in lib/ds4.php (the single
 // connector) so all provider-contact logic is in exactly one place.
-define('DEEPSEEK_TIMEOUT', 120);   // seconds; configurable
+define('DEEPSEEK_TIMEOUT', dspe_setting_int('deepseek_timeout', 120, 10, 600));
+
+// UI-preferred model: which allowlisted model the front-end pre-selects and
+// passes by default. The SERVER-SIDE hard default stays flash everywhere
+// (DEFAULT_MODEL) — this only changes what the client offers first, so the
+// "flash default" policy still holds whenever the client sends nothing.
+$__dspe_pref = (string) ($GLOBALS['__dspe_settings_raw']['default_model'] ?? '');
+define('PREFERRED_MODEL', in_array($__dspe_pref, ALLOWED_MODELS, true) ? $__dspe_pref : DEFAULT_MODEL);
 
 // --- Limits ---------------------------------------------------------------
 define('MAX_UPLOAD_BYTES', 25 * 1024 * 1024);       // 25 MB
@@ -72,8 +103,20 @@ define('UPLOAD_MIME_MAP', [
 define('GD_REENCODE_MIME', ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp']);
 
 // --- Feature flags --------------------------------------------------------
-define('AUTO_BACKUP_ON_SAVE', false);   // opt-in
+define('AUTO_BACKUP_ON_SAVE', dspe_setting_bool('auto_backup_on_save', false));   // opt-in
 define('CSP_ENFORCE', true);            // false => Content-Security-Policy-Report-Only
+
+// --- Agentic reading / PEEK map (AI context) ------------------------------
+// The AI can automatically pull in files the edited file depends on (follows
+// include/require + symbol references) and a compact structural map of the
+// project, so it understands code without the operator pasting everything.
+define('AGENTIC_READING', dspe_setting_bool('agentic_reading', true));
+define('AGENTIC_MAX_FILES', dspe_setting_int('agentic_max_files', 6, 0, 40));
+define('AGENTIC_MAX_BYTES', dspe_setting_int('agentic_max_bytes', 60000, 0, 400000));
+define('AGENTIC_MAX_DEPTH', dspe_setting_int('agentic_max_depth', 3, 1, 6));
+define('PEEK_ENABLED', dspe_setting_bool('peek_enabled', true));
+define('PEEK_MAX_FILES', dspe_setting_int('peek_max_files', 400, 10, 5000));
+define('PEEK_CACHE_FILE', WORK_DIR . '/.g023_peek.json');
 
 // Ensure required runtime directories/files exist (self-creating state).
 function dspe_bootstrap_state(): void
@@ -91,6 +134,70 @@ function dspe_bootstrap_state(): void
     if (!is_file($htaccess)) {
         @file_put_contents($htaccess, dspe_upload_htaccess());
     }
+}
+
+/**
+ * Read the raw settings JSON (associative). Returns [] when absent/invalid —
+ * the app is fully functional with zero settings. Never throws.
+ */
+function dspe_load_settings_file(): array
+{
+    if (!is_file(SETTINGS_FILE)) {
+        return [];
+    }
+    $raw = @file_get_contents(SETTINGS_FILE);
+    if ($raw === false || $raw === '') {
+        return [];
+    }
+    $data = json_decode($raw, true);
+    return is_array($data) ? $data : [];
+}
+
+/**
+ * Resolve a configurable path setting to an absolute, normalized path.
+ *  - empty            -> $default
+ *  - absolute (/, \\, X:\) -> used as-is (operator is trusted; localhost posture)
+ *  - relative         -> resolved against APP_ROOT
+ * Trailing slashes are trimmed. No existence check (the dir/file may be created
+ * later); callers validate as needed.
+ */
+function dspe_resolve_setting_path(string $value, string $default): string
+{
+    $value = trim($value);
+    if ($value === '') {
+        return $default;
+    }
+    // Reject null bytes outright.
+    if (strpos($value, "\0") !== false) {
+        return $default;
+    }
+    $norm = str_replace('\\', '/', $value);
+    $isAbsUnix = $norm !== '' && $norm[0] === '/';
+    $isAbsWin  = (bool) preg_match('#^[A-Za-z]:/#', $norm);
+    $abs = ($isAbsUnix || $isAbsWin) ? $value : APP_ROOT . DIRECTORY_SEPARATOR . $value;
+    // Trim a trailing separator (but keep a lone root "/").
+    $abs = rtrim($abs, "/\\");
+    return $abs === '' ? $default : $abs;
+}
+
+/** Read a settings value as a clamped integer (with default + bounds). */
+function dspe_setting_int(string $key, int $default, int $min, int $max): int
+{
+    $v = $GLOBALS['__dspe_settings_raw'][$key] ?? null;
+    if ($v === null || $v === '' || !is_numeric($v)) {
+        return $default;
+    }
+    $n = (int) $v;
+    return max($min, min($max, $n));
+}
+
+/** Read a settings value as a boolean (accepts true/false/"1"/"0"/1/0). */
+function dspe_setting_bool(string $key, bool $default): bool
+{
+    if (!array_key_exists($key, $GLOBALS['__dspe_settings_raw'])) {
+        return $default;
+    }
+    return filter_var($GLOBALS['__dspe_settings_raw'][$key], FILTER_VALIDATE_BOOLEAN);
 }
 
 function dspe_upload_htaccess(): string

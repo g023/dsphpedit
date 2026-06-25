@@ -3,9 +3,9 @@
  * tools/selfcheck.php — Environment & dependency self-check.
  *
  * Run:  php tools/selfcheck.php   (CLI)   or open in a browser (localhost).
- * Confirms required extensions, writable runtime dirs, key presence, and the
- * preview subprocess capability. The app degrades gracefully if optional bits
- * are missing; this report tells the operator what's available.
+ * Confirms required extensions, writable runtime dirs, and key presence.
+ * Preview runs through the native webserver (no PHP CLI / subprocess), so
+ * there is nothing process-related to probe here.
  *
  * @license MIT
  */
@@ -27,9 +27,20 @@ chk($checks, 'uploads/ writable',       is_writable(UPLOAD_DIR));
 chk($checks, 'g023_backups/ writable',  is_writable(BACKUP_DIR));
 chk($checks, 'history file writable',   is_writable(HISTORY_FILE));
 chk($checks, 'K.dat present',           ds4_has_key(), ds4_has_key() ? 'key found' : 'no key — AI disabled, editing still works');
-chk($checks, 'proc_open available (preview)', function_exists('proc_open') && !in_array('proc_open', explode(',', (string) ini_get('disable_functions'))), 'needed to execute preview');
-chk($checks, 'GNU timeout (hard kill)', is_executable(trim((string) @shell_exec('command -v timeout 2>/dev/null'))) , 'optional; max_execution_time used as fallback');
+chk($checks, 'preview endpoint present', is_file(__DIR__ . '/../api/preview.php'), 'redirects into working_folder so the native webserver runs the file (no PHP CLI)');
 chk($checks, 'upload no-exec guard',    is_file(UPLOAD_DIR . '/.htaccess'));
+
+// New subsystems: settings, PEEK map, agentic reading.
+chk($checks, 'lib/settings.php present', is_file(__DIR__ . '/../lib/settings.php'));
+chk($checks, 'lib/codemap.php present', is_file(__DIR__ . '/../lib/codemap.php'), 'PEEK map');
+chk($checks, 'lib/context.php present', is_file(__DIR__ . '/../lib/context.php'), 'agentic reading');
+chk($checks, 'settings file path safe', !WORK_DIR_IN_APPROOT || !str_starts_with(SETTINGS_FILE, WORK_DIR . DIRECTORY_SEPARATOR), 'settings live outside working_folder');
+chk($checks, 'preview reachable',       WORK_DIR_IN_APPROOT, WORK_DIR_IN_APPROOT ? 'working folder under app root' : 'working folder outside app — preview disabled');
+if (is_file(__DIR__ . '/../lib/codemap.php')) {
+    require_once __DIR__ . '/../lib/codemap.php';
+    $map = peek_build(false);
+    chk($checks, 'PEEK map builds',      is_array($map) && isset($map['files']), $map['count'] . ' file(s) mapped');
+}
 
 $req = array_filter($checks, fn($c) => !str_contains($c['label'], 'timeout') && !str_contains($c['label'], 'K.dat'));
 $allReq = array_reduce($req, fn($carry, $c) => $carry && $c['ok'], true);

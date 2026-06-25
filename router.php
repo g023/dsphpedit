@@ -20,6 +20,7 @@ $base = basename($path);
 // --- Deny secrets / state -------------------------------------------------
 $denied =
     $base === 'K.dat'
+    || $base === 'dspe_settings.json'
     || $base === 'g023_history.json'
     || str_contains($path, '/g023_backups/')
     || preg_match('#\.tmp(_|$)#', $base)

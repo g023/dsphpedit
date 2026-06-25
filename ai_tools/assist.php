@@ -17,6 +17,7 @@ require_once __DIR__ . '/../lib/security.php';
 require_once __DIR__ . '/../lib/response.php';
 require_once __DIR__ . '/../lib/paths.php';
 require_once __DIR__ . '/../lib/ds4.php';
+require_once __DIR__ . '/../lib/context.php';
 
 $input  = api_guard();
 $action = $input['action'] ?? '';
@@ -57,8 +58,29 @@ $lang = $file !== '' ? pathinfo($file, PATHINFO_EXTENSION) : 'php';
 
 $messages = [
     ['role' => 'system', 'content' => 'You are an expert PHP code assistant embedded in a web IDE.'],
-    ['role' => 'user', 'content' => "{$instruction}\n\nFile: {$file}\n\n```{$lang}\n{$code}\n```"],
 ];
+
+// Agentic reading: give the tools the same auto-gathered project context.
+$wantContext = !isset($input['context']) || filter_var($input['context'], FILTER_VALIDATE_BOOLEAN);
+$ctxMeta = ['files' => [], 'peek_used' => false, 'bytes' => 0];
+if ($wantContext && (AGENTIC_READING || PEEK_ENABLED) && ($file !== '' || $code !== '')) {
+    try {
+        $ctx = dspe_build_context($file, $code);
+        $ctxMsg = dspe_context_message($ctx, $file);
+        if ($ctxMsg !== '') {
+            $messages[] = ['role' => 'system', 'content' => $ctxMsg];
+        }
+        $ctxMeta = [
+            'files'     => array_map(static fn($f) => ['path' => $f['path'], 'reason' => $f['reason']], $ctx['files']),
+            'peek_used' => $ctx['peek_used'],
+            'bytes'     => $ctx['bytes'],
+        ];
+    } catch (\Throwable $e) {
+        $ctxMeta['error'] = 'context unavailable';
+    }
+}
+
+$messages[] = ['role' => 'user', 'content' => "{$instruction}\n\nFile: {$file}\n\n```{$lang}\n{$code}\n```"];
 
 try {
     $r = ds4_chat(messages: $messages, model: $model, temperature: $temp);
@@ -68,6 +90,7 @@ try {
         'model'    => $r['meta']['model'] ?? $model,
         'response' => $r['response'],
         'usage'    => $r['meta']['usage'] ?? null,
+        'context'  => $ctxMeta,
     ]);
 } catch (RuntimeException $e) {
     fail($e->getMessage(), 502);

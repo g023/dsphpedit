@@ -132,6 +132,7 @@ Verify your host before you start:
 ```bash
 php tools/selfcheck.php       # checks extensions, writable dirs, key, preview capability
 php tools/test_paths.php      # path-traversal test suite — must be ALL GREEN
+php tools/test_features.php   # settings / PEEK / agentic-reading suite (in-process assertions)
 ```
 
 Both also render in a browser (they are localhost-only tools).
@@ -156,7 +157,10 @@ Both also render in a browser (they are localhost-only tools).
 | **History** | Conversations persisted to `working_folder/g023_history.json` — browsable, reloadable, clearable, rotated. |
 | **Backup / restore** | One-click ZIP of `working_folder/` (atomic). **Zip-Slip-safe** restore (per-entry validation, stream extraction, temp-dir-then-swap). Retention prunes oldest (default 20). |
 | **Analysis tools** | Non-AI: in-process syntax-check lint (`token_get_all` full-parse — no `php -l`/CLI subprocess), structure outline, metrics. AI: explain / refactor / docblocks / find-bugs (routed through DeepSeek on flash). |
-| **Security** | Strict `'self'` CSP, CSRF on every state-changing POST, hardened sessions, security headers, single `safe_resolve()` path gate, key never reaches the browser. |
+| **Settings** ⚙ | A settings panel for an **alternate working folder** and **alternate API-key path** (relative *or* absolute), plus default model, thinking on/off + reasoning effort, DeepSeek timeout, editor font/tab-size/word-wrap, auto-backup-on-save, and the agentic-reading/PEEK knobs. Stored in `dspe_settings.json` (never web-served, kept outside `working_folder/` so a folder switch never loses it); path changes prompt a reload. |
+| **Agentic reading** 🔍 | When you ask the AI about (or to edit) a file, it automatically reads the files that file *depends on* — following `include`/`require` **and** resolving symbols (functions/classes/constants used here but defined elsewhere) via the project map. Bounded by file/byte/depth budgets (configurable); over-budget files degrade to a summary. Each answer shows a **"read N related files"** badge listing exactly what was pulled in. Deterministic — no extra LLM round-trips. |
+| **PEEK project map** 🗺 | A compact structural map of `working_folder/` (symbols, signatures, namespaces, dependency edges) the AI is given so it understands your codebase without reading every file. Extracted with `token_get_all()`, cached at `working_folder/.g023_peek.json` and rebuilt incrementally (only changed files re-scan); browse it in the 🗺 panel. |
+| **Security** | Strict `'self'` CSP, CSRF on every state-changing POST, hardened sessions, security headers, single `safe_resolve()` path gate, key never reaches the browser. `dspe_settings.json` is denied to the web alongside `K.dat`. |
 
 ---
 
@@ -165,36 +169,44 @@ Both also render in a browser (they are localhost-only tools).
 ```
 dsphpedit/
 ├── index.php          Front-end shell (CSP, CSRF meta, vendored asset includes)
-├── config.php         Paths, model policy, limits, self-creating state
+├── config.php         Paths, model policy, limits, settings resolution, self-creating state
 ├── router.php         Front controller for `php -S` (denies secrets/state)
-├── .htaccess          Apache hardening (denies K.dat, dotfiles; security headers)
+├── .htaccess          Apache hardening (denies K.dat, dspe_settings.json, dotfiles; security headers)
 ├── K.dat              YOUR DeepSeek API key (git-ignored; never web-served)
 ├── K.dat.example      Placeholder you copy to K.dat
+├── dspe_settings.json operator settings (never web-served; outside working_folder/; auto-created on first save)
 ├── lib/
 │   ├── ds4.php        Canonical DeepSeek connector (ds4_chat / llm_get)
 │   ├── paths.php      safe_resolve() — the ONE gate for all file I/O
 │   ├── security.php   session bootstrap, CSRF, security headers, api_guard()
+│   ├── settings.php   settings schema, validation, save, path checks
+│   ├── codemap.php    PEEK map builder (symbols + dependency edges, cached)
+│   ├── context.php    agentic reading (follows includes + symbol refs)
 │   └── response.php   JSON envelope helpers
 ├── api/
 │   ├── files.php      list / read / write / create / rename / delete / mkdir
 │   ├── preview.php    server-side PHP execution (the headline feature)
-│   ├── ai_chat.php    explain / full / edit modes
+│   ├── ai_chat.php    explain / full / edit modes (+ agentic context)
 │   ├── complete.php   AI inline code completion (fill-in-the-middle)
+│   ├── settings.php   get / save / reset operator settings
+│   ├── peek.php       project map: render / structured / symbols / deps
 │   ├── upload.php     finfo + GD re-encode + thumbnail
 │   ├── media.php      media browse + thumbnail/raw serving
 │   ├── history.php    conversation history
 │   └── backup.php     create / list / restore / delete (Zip-Slip-safe)
 ├── ai_tools/assist.php   programmatic AI tools (explain/refactor/docblocks/bugs)
 ├── tools/
-│   ├── analyze.php    non-AI lint / outline / metrics
-│   ├── selfcheck.php  environment self-check
-│   └── test_paths.php traversal test suite
+│   ├── analyze.php       non-AI lint / outline / metrics
+│   ├── selfcheck.php     environment self-check
+│   ├── test_features.php settings / PEEK / agentic-reading suite (36 assertions)
+│   └── test_paths.php    traversal test suite
 ├── assets/vendor/     Ace (BSD-3) + jQuery — all local, no CDN
 ├── docs/PRD.md        product requirements / spec of record
 └── working_folder/    YOUR project under edit (the sandbox boundary)
     ├── welcome.php     sample file (preview this first)
     ├── uploads/        media (non-executable, .htaccess)
     ├── g023_backups/   ZIP snapshots (auto-created)
+    ├── .g023_peek.json cached PEEK map (hidden, per-working-folder)
     └── g023_history.json  conversation history (auto-created)
 ```
 

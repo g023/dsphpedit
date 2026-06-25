@@ -4,7 +4,7 @@
  *
  *  POST action= lint | outline | metrics   (path = working_folder-relative)
  *
- * lint    : php -l on the file (subprocess, sandboxed open_basedir).
+ * lint    : in-process syntax check via token_get_all(TOKEN_PARSE).
  * outline : functions / classes / methods via token_get_all().
  * metrics : line counts, token stats, simple complexity hints.
  *
@@ -36,96 +36,19 @@ switch ($action) {
     default:        fail('Unknown action');
 }
 
+/**
+ * In-process syntax check using the tokenizer's full-parse mode. Catches the
+ * same syntax/parse errors as `php -l` without ever shelling out to a PHP CLI
+ * binary — by design this project relies only on the native webserver's PHP,
+ * so there is no subprocess/proc_open path.
+ */
 function tool_lint(string $abs): string
 {
     $ext = strtolower(pathinfo($abs, PATHINFO_EXTENSION));
     if (!in_array($ext, ['php', 'phtml', 'inc'], true)) {
         return 'Lint applies to PHP files only (this is .' . $ext . ').';
     }
-
-    // Prefer the gold-standard `php -l` when a real CLI binary is reachable.
-    // CAUTION: under the web SAPI (apache2handler/php-fpm) PHP_BINARY is empty
-    // or points at the *server* binary, which does NOT accept `-l`. So resolve
-    // a CLI explicitly; if none is usable (locked-down shared hosting, WAMP
-    // without php on PATH, proc_open disabled), fall back to an in-process
-    // tokenizer check so lint never silently breaks.
-    $php = php_cli_binary();
-    if ($php !== null && function_exists('proc_open')) {
-        $cli = lint_via_cli($php, $abs);
-        if ($cli !== null) {
-            return $cli;
-        }
-    }
     return lint_via_tokenizer($abs);
-}
-
-/**
- * Resolve an absolute path to a PHP *CLI* binary, or null if none is found.
- * Never returns a bare "php" (an unresolved name would spawn a doomed child
- * under array-form proc_open); every candidate is confirmed on disk first.
- */
-function php_cli_binary(): ?string
-{
-    $win = (DIRECTORY_SEPARATOR === '\\');
-    $exe = $win ? '.exe' : '';
-
-    $candidates = [];
-    // PHP_BINARY is trustworthy only when we're already running the CLI SAPI.
-    if (PHP_BINARY !== '' && in_array(PHP_SAPI, ['cli', 'cli-server', 'phpdbg'], true)) {
-        $candidates[] = PHP_BINARY;
-    }
-    // Version-pinned + generic names alongside the active install.
-    $ver  = PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION;
-    $dirs = array_filter([PHP_BINDIR, PHP_BINARY !== '' ? dirname(PHP_BINARY) : '']);
-    foreach ($dirs as $dir) {
-        foreach (["php{$ver}", 'php' . PHP_MAJOR_VERSION, 'php'] as $name) {
-            $candidates[] = rtrim($dir, '/\\') . DIRECTORY_SEPARATOR . $name . $exe;
-        }
-    }
-    // PATH lookup for a bare `php`.
-    $path = (string) getenv('PATH');
-    if ($path !== '') {
-        foreach (explode($win ? ';' : ':', $path) as $dir) {
-            if ($dir === '') continue;
-            $candidates[] = rtrim($dir, '/\\') . DIRECTORY_SEPARATOR . 'php' . $exe;
-        }
-    }
-
-    foreach ($candidates as $c) {
-        if (@is_file($c) && @is_executable($c)) {
-            return $c;
-        }
-    }
-    return null;
-}
-
-/**
- * Run `php -l` via the resolved CLI binary. Returns the formatted result, or
- * null if the subprocess could not be launched/exec'd (caller falls back).
- */
-function lint_via_cli(string $php, string $abs): ?string
-{
-    $descr = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
-    $cmd = [$php, '-d', 'open_basedir=' . WORK_DIR . PATH_SEPARATOR . sys_get_temp_dir(),
-            '-d', 'display_errors=1', '-l', $abs];
-    $proc = @proc_open($cmd, $descr, $pipes, dirname($abs));
-    if (!is_resource($proc)) {
-        return null;
-    }
-    $out = stream_get_contents($pipes[1]);
-    $err = stream_get_contents($pipes[2]);
-    fclose($pipes[1]); fclose($pipes[2]);
-    $code = proc_close($proc);
-
-    $text = trim($out . "\n" . $err);
-    // exec failure (binary vanished / not a CLI) → 127 with no diagnostics;
-    // fall back to the in-process check rather than report a bogus result.
-    if ($text === '' && $code === 127) {
-        return null;
-    }
-    // Strip absolute server path noise; show relative file name only.
-    $text = str_replace($abs, basename($abs), $text);
-    return $text !== '' ? $text : 'No output.';
 }
 
 /**

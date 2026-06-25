@@ -16,6 +16,7 @@ require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/../lib/security.php';
 require_once __DIR__ . '/../lib/response.php';
 require_once __DIR__ . '/../lib/ds4.php';
+require_once __DIR__ . '/../lib/context.php';
 
 $input = api_guard();
 
@@ -74,6 +75,36 @@ $systems = [
 $temps = ['explain' => 0.5, 'full' => 0.5, 'edit' => 0.2];
 
 $messages = [['role' => 'system', 'content' => $systems[$mode]]];
+
+// --- Agentic reading: auto-gather related files + PEEK map ----------------
+// Per-request override: client may pass context=0 to disable for one call;
+// otherwise the operator's settings (AGENTIC_READING / PEEK_ENABLED) govern.
+$ctxMeta = ['files' => [], 'peek_used' => false, 'bytes' => 0];
+$wantContext = !isset($input['context']) || filter_var($input['context'], FILTER_VALIDATE_BOOLEAN);
+if ($wantContext && (AGENTIC_READING || PEEK_ENABLED) && ($file !== '' || $code !== '')) {
+    try {
+        $ctx = dspe_build_context($file, $code);
+        $ctxMsg = dspe_context_message($ctx, $file);
+        if ($ctxMsg !== '') {
+            // Inject as a system message so it frames the conversation without
+            // being mistaken for the user's own words.
+            $messages[] = ['role' => 'system', 'content' => $ctxMsg];
+        }
+        $ctxMeta = [
+            'files'     => array_map(static fn($f) => [
+                'path'    => $f['path'],
+                'reason'  => $f['reason'],
+                'summary' => $f['summary'],
+            ], $ctx['files']),
+            'peek_used' => $ctx['peek_used'],
+            'bytes'     => $ctx['bytes'],
+        ];
+    } catch (\Throwable $e) {
+        // Context is best-effort: never let it break a chat request.
+        $ctxMeta['error'] = 'context unavailable';
+    }
+}
+
 foreach ($history as $msg) {
     if (isset($msg['role'], $msg['content']) && in_array($msg['role'], ['user', 'assistant'], true)) {
         $messages[] = ['role' => $msg['role'], 'content' => (string) $msg['content']];
@@ -107,6 +138,7 @@ try {
         'reasoning' => $result['reasoning'],
         'usage'     => $result['meta']['usage'] ?? null,
         'finish'    => $result['meta']['finish_reason'] ?? null,
+        'context'   => $ctxMeta,
     ]);
 } catch (RuntimeException $e) {
     fail($e->getMessage(), 502);
