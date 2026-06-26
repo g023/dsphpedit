@@ -3,6 +3,27 @@
 All notable changes to **DS PHP Edit** are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] — 2026-06-25
+
+### Added
+- **`api/csrf.php`** — a read-only `GET` endpoint that returns a fresh CSRF
+  token, letting the client recover after a token rotates or its session is
+  garbage-collected without forcing a full page reload.
+
+### Fixed
+- **Stale CSRF token → silent 403s.** PHP's session garbage collector
+  (`session.gc_maxlifetime`, default 1440s) could reap the session file — and
+  with it the CSRF token — long before the app-level `SESSION_IDLE_TIMEOUT`,
+  causing state-changing POSTs (save, upload, AI edit) to fail with 403.
+  `lib/security.php` now pins `session.gc_maxlifetime` to `SESSION_IDLE_TIMEOUT`
+  so the token survives as long as the session is meant to.
+- **Transparent CSRF retry on the client.** `assets/js/app.js` wraps requests in
+  `withCsrfRetry()`: on a 403 it fetches a fresh token from `api/csrf.php` (one
+  coalesced GET for a burst of failures), updates the cached value and the
+  `<meta>` tag, then retries the original request once. Uploads rebuild their
+  `FormData` per attempt so the refreshed token rides in both the field and the
+  header.
+
 ## [1.1.0] — 2026-06-24
 
 ### Added

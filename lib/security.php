@@ -27,6 +27,10 @@ function security_session_start(): void
     ini_set('session.use_strict_mode', '1');
     ini_set('session.use_only_cookies', '1');
     ini_set('session.cookie_httponly', '1');
+    // Keep PHP's GC from reaping sessions before our app-level idle timeout.
+    // Without this, gc_maxlifetime (default 1440s) lets the GC delete the
+    // session file long before SESSION_IDLE_TIMEOUT, dropping the CSRF token.
+    ini_set('session.gc_maxlifetime', (string) SESSION_IDLE_TIMEOUT);
 
     session_set_cookie_params([
         'lifetime' => 0,

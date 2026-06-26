@@ -6,7 +6,7 @@
     "use strict";
 
     // ---- Globals & config -------------------------------------------------
-    const CSRF = $('meta[name="csrf-token"]').attr('content') || '';
+    let CSRF = $('meta[name="csrf-token"]').attr('content') || '';
     const HAS_KEY = $('meta[name="has-key"]').attr('content') === '1';
     const DEFAULT_MODEL = $('meta[name="default-model"]').attr('content') || 'deepseek-v4-flash';
     const PREFERRED_MODEL = $('meta[name="preferred-model"]').attr('content') || DEFAULT_MODEL;
@@ -68,12 +68,44 @@
     };
 
     // ---- Small helpers ----------------------------------------------------
+    // Fetch a fresh CSRF token (read-only GET) and update both the cached
+    // value and the <meta> tag. Used to recover from a rotated/expired token.
+    let csrfRefreshing = null;
+    function refreshCsrf() {
+        // Coalesce concurrent refreshes so a burst of 403s makes one GET.
+        if (csrfRefreshing) return csrfRefreshing;
+        csrfRefreshing = $.ajax({ url: 'api/csrf.php', type: 'GET', dataType: 'json' })
+            .then((r) => {
+                if (r && r.success && r.data && r.data.token) {
+                    CSRF = r.data.token;
+                    $('meta[name="csrf-token"]').attr('content', CSRF);
+                }
+                return CSRF;
+            })
+            .always(() => { csrfRefreshing = null; });
+        return csrfRefreshing;
+    }
+
+    // Fire an AJAX request; on a 403 (stale CSRF token) refresh the token once
+    // and retry transparently. `makeRequest` must build a FRESH $.ajax each
+    // call so the retry picks up the new token. Returns a jQuery promise that
+    // resolves with the parsed JSON and rejects with the jqXHR, so existing
+    // .then()/.fail() callers keep working unchanged.
+    function withCsrfRetry(makeRequest) {
+        return makeRequest().then(null, (xhr) => {
+            if (xhr && xhr.status === 403) {
+                return refreshCsrf().then(() => makeRequest());
+            }
+            return $.Deferred().reject(xhr).promise();
+        });
+    }
+
     function post(url, data) {
-        return $.ajax({
+        return withCsrfRetry(() => $.ajax({
             url, type: 'POST', dataType: 'json',
             headers: { 'X-CSRF-Token': CSRF },
             data
-        });
+        }));
     }
     function api(file, data) { return post('api/' + file, data); }
 
@@ -920,13 +952,17 @@
         const queue = Array.from(files);
         let done = 0;
         queue.forEach((file) => {
-            const fd = new FormData();
-            fd.append('action', 'upload');
-            fd.append('csrf_token', CSRF);
-            fd.append('file', file);
-            $.ajax({
-                url: 'api/upload.php', type: 'POST', data: fd, processData: false, contentType: false,
-                headers: { 'X-CSRF-Token': CSRF }, dataType: 'json'
+            // Rebuild the FormData per attempt so a CSRF retry carries the
+            // refreshed token in both the field and the header.
+            withCsrfRetry(() => {
+                const fd = new FormData();
+                fd.append('action', 'upload');
+                fd.append('csrf_token', CSRF);
+                fd.append('file', file);
+                return $.ajax({
+                    url: 'api/upload.php', type: 'POST', data: fd, processData: false, contentType: false,
+                    headers: { 'X-CSRF-Token': CSRF }, dataType: 'json'
+                });
             }).then((r) => {
                 if (r.success) toast('Uploaded ' + r.data.name, 'ok');
                 else toast(r.error || ('Upload failed: ' + file.name), 'err');
